@@ -103,10 +103,14 @@ class ActorReplicaWrapper:
                 name=self._actor_name,
                 lifetime="detached" if self._detached else None,
                 placement_group=self._placement_group,
-                **backend_info.replica_config.ray_actor_options).remote(
-                    self._backend_tag, self._replica_tag,
-                    backend_info.replica_config.init_args,
-                    backend_info.backend_config, self._controller_name)
+                **backend_info.replica_config.ray_actor_options
+            ).remote(
+                self._backend_tag,
+                self._replica_tag,
+                backend_info.replica_config.init_args,
+                backend_info.backend_config,
+                self._controller_name
+            )
         self._startup_obj_ref = self._actor_handle.ready.remote()
 
     def check_ready(self) -> bool:

@@ -30,12 +30,6 @@ class RequestMetadata:
 
     is_shadow_query: bool = False
 
-    # Determines whether or not the backend implementation will be presented
-    # with a ServeRequest object or directly passed args and kwargs. This is
-    # used to maintain backward compatibility and will be removed in the
-    # future.
-    use_serve_request: bool = True
-
     def __post_init__(self):
         self.http_headers.setdefault("X-Serve-Call-Method", self.call_method)
         self.http_headers.setdefault("X-Serve-Shard-Key", self.shard_key)
@@ -46,6 +40,9 @@ class Query:
     args: List[Any]
     kwargs: Dict[Any, Any]
     metadata: RequestMetadata
+
+    # Fields used by backend worker to perform timing measurement.
+    tick_enter_replica: Optional[float] = None
 
 
 class ReplicaSet:
@@ -85,6 +82,8 @@ class ReplicaSet:
             "backend": self.backend_tag
         })
 
+        self.controller_handle = controller_handle
+
         self.long_poll_client = LongPollClient(
             controller_handle,
             {
@@ -118,8 +117,6 @@ class ReplicaSet:
         if len(added) > 0 or len(removed) > 0:
             self.replica_iterator = itertools.cycle(
                 self.in_flight_queries.keys())
-            logger.debug(
-                f"ReplicaSet: +{len(added)}, -{len(removed)} replicas.")
             self.config_updated_event.set()
 
     def _try_assign_replica(self, query: Query) -> Optional[ray.ObjectRef]:
@@ -181,6 +178,18 @@ class ReplicaSet:
                     return_when=asyncio.FIRST_COMPLETED)
                 if self.config_updated_event.is_set():
                     self.config_updated_event.clear()
+
+            backend_conf = await ray.get(self.controller_handle.get_backend_config.remote(self.backend_tag))
+            if backend_conf.max_replicas > 0:
+                if backend_conf.last_update
+                logger.info("Max Replicas enables scale up")
+                if self.num_queued_queries > backend_conf.num_replicas:
+                    pass
+
+
+
+            # Actually increase the number of replicas if the queue is large and the configuration allows for it!
+
             # We are pretty sure a free replica is ready now, let's recurse and
             # assign this query a replica.
             assigned_ref = self._try_assign_replica(query)
@@ -275,8 +284,7 @@ class EndpointRouter:
 
         chosen_backend, *shadow_backends = self.endpoint_policy.assign(query)
 
-        result_ref = await self._get_or_create_replica_set(
-            chosen_backend).assign_replica(query)
+        result_ref = await self._get_or_create_replica_set(chosen_backend).assign_replica(query)
         for backend in shadow_backends:
             (await self._get_or_create_replica_set(backend)
              .assign_replica(query))

@@ -30,6 +30,9 @@ class BackendConfig(BaseModel):
     num_replicas: PositiveInt = 1
     max_concurrent_queries: Optional[int] = None
     user_config: Any = None
+    max_replicas: Int = -1
+    last_update: NonNegativeFloat = 0
+    scale_frequency: NonNegativeFloat = 0
 
     experimental_graceful_shutdown_wait_loop_s: NonNegativeFloat = 2.0
     experimental_graceful_shutdown_timeout_s: NonNegativeFloat = 20.0

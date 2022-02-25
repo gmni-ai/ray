@@ -1,17 +1,25 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority
+value: 1000000
+globalDefault: false
+description: "This priority class should be used for XYZ service pods only."
+---
 apiVersion: cluster.ray.io/v1
 kind: RayCluster
 metadata:
   name: example-cluster
 spec:
   # The maximum number of workers nodes to launch in addition to the head node.
-  maxWorkers: 3
+  maxWorkers: 80
   # The autoscaler will scale up the cluster faster with higher upscaling speed.
   # E.g., if the task requires adding more nodes then autoscaler will gradually
   # scale up the cluster in chunks of upscaling_speed*currently_running_nodes.
   # This number should be > 0.
   upscalingSpeed: 1.0
   # If a node is idle for this many minutes, it will be removed.
-  idleTimeoutMinutes: 5
+  idleTimeoutMinutes: 1
   # Specify the pod type for the ray head node (as configured below).
   headPodType: head-node
   # Specify the allowed pod types for this ray cluster and the resources they provide.
@@ -37,10 +45,12 @@ spec:
         - name: dshm
           emptyDir:
             medium: Memory
+        priorityClassName: high-priority
         containers:
         - name: ray-node
           imagePullPolicy: Always
-          image: rayproject/ray:nightly
+          # image: rayproject/ray:nightly-py38
+          image: 709156019088.dkr.ecr.us-west-2.amazonaws.com/ray-transformers:latest
           # Do not change this command - it keeps the pod alive until it is
           # explicitly killed.
           command: ["/bin/bash", "-c", "--"]
@@ -49,6 +59,7 @@ spec:
           - containerPort: 6379  # Redis port
           - containerPort: 10001  # Used by Ray Client
           - containerPort: 8265  # Used by Ray Dashboard
+          - containerPort: 9090  # Prometheus
 
           # This volume allocates shared memory for Ray to use for its plasma
           # object store. If you do not provide this, Ray will fall back to
@@ -58,8 +69,8 @@ spec:
             name: dshm
           resources:
             requests:
-              cpu: 1000m
-              memory: 512Mi
+              cpu: 1500m
+              memory: 2048Mi
             limits:
               # The maximum memory that this pod is allowed to use. The
               # limit will be detected by ray and split to use 10% for
@@ -68,15 +79,55 @@ spec:
               # the object store size is not set manually, ray will
               # allocate a very large object store in each pod that may
               # cause problems for other pods.
-              memory: 512Mi
+              memory: 2048Mi
+      #
+      # An alternative head from https://github.com/ray-project/ray/blob/master/doc/kubernetes/ray-cluster.yaml
+      #
+      # # This volume allocates shared memory for Ray to use for its plasma
+      # # object store. If you do not provide this, Ray will fall back to
+      # # /tmp which cause slowdowns if is not a shared memory volume.
+      # volumes:
+      # - name: dshm
+      #   emptyDir:
+      #     medium: Memory
+      # containers:
+      #   - name: ray-head
+      #     image: rayproject/ray:nightly
+      #     imagePullPolicy: IfNotPresent
+      #     command: [ "/bin/bash", "-c", "--" ]
+      #     args:
+      #       - "ray start --head --port=6379 --redis-shard-ports=6380,6381 --num-cpus=$MY_CPU_REQUEST --object-manager-port=12345 --node-manager-port=12346 --block"
+      #     ports:
+      #       - containerPort: 6379 # Redis port
+      #       - containerPort: 10001 # Used by Ray Client
+      #       - containerPort: 8265 # Used by Ray Dashboard
+      #
+      #     # This volume allocates shared memory for Ray to use for its plasma
+      #     # object store. If you do not provide this, Ray will fall back to
+      #     # /tmp which cause slowdowns if is not a shared memory volume.
+      #     volumeMounts:
+      #       - mountPath: /dev/shm
+      #         name: dshm
+      #     env:
+      #       # This is used in the ray start command so that Ray can spawn the
+      #       # correct number of processes. Omitting this may lead to degraded
+      #       # performance.
+      #       - name: MY_CPU_REQUEST
+      #         valueFrom:
+      #           resourceFieldRef:
+      #             resource: requests.cpu
+      #     resources:
+      #       requests:
+      #         cpu: 100m
+      #         memory: 512Mi
   - name: worker-node
     # Minimum number of Ray workers of this Pod type.
-    minWorkers: 2
+    minWorkers: 1
     # Maximum number of Ray workers of this Pod type. Takes precedence over minWorkers.
-    maxWorkers: 3
+    maxWorkers: 80
     # User-specified custom resources for use by Ray.
     # (Ray detects CPU and GPU from pod spec resource requests and limits, so no need to fill those here.)
-    rayResources: {"foo": 1, "bar": 1}
+    rayResources: {"worker": 1}
     podConfig:
       apiVersion: v1
       kind: Pod
@@ -92,7 +143,7 @@ spec:
         containers:
         - name: ray-node
           imagePullPolicy: Always
-          image: rayproject/ray:nightly
+          image: 709156019088.dkr.ecr.us-west-2.amazonaws.com/ray-transformers:latest
           command: ["/bin/bash", "-c", "--"]
           args: ["trap : TERM INT; sleep infinity & wait;"]
           # This volume allocates shared memory for Ray to use for its plasma
@@ -104,7 +155,7 @@ spec:
           resources:
             requests:
               cpu: 1000m
-              memory: 512Mi
+              memory: 1024Mi
             limits:
               # The maximum memory that this pod is allowed to use. The
               # limit will be detected by ray and split to use 10% for
@@ -113,13 +164,16 @@ spec:
               # the object store size is not set manually, ray will
               # allocate a very large object store in each pod that may
               # cause problems for other pods.
-              memory: 512Mi
+              memory: 4096Mi
   # Commands to start Ray on the head node. You don't need to change this.
   # Note dashboard-host is set to 0.0.0.0 so that Kubernetes can port forward.
   headStartRayCommands:
+    - ./prometheus/prometheus --config.file=./prometheus.yaml &
     - ray stop
-    - ulimit -n 65536; ray start --head --no-monitor --dashboard-host 0.0.0.0
+    - ulimit -n 65536; ray start --head --no-monitor --dashboard-host 0.0.0.0 --metrics-export-port=8080
   # Commands to start Ray on worker nodes. You don't need to change this.
   workerStartRayCommands:
     - ray stop
-    - ulimit -n 65536; ray start --address=$RAY_HEAD_IP:6379
+    - ulimit -n 65536; ray start --address=$RAY_HEAD_IP:6379 --metrics-export-port=8080
+
+---
